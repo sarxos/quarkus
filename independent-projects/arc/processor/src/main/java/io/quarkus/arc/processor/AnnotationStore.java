@@ -7,12 +7,18 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.EnumMap;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.function.Predicate;
+import java.util.stream.Collector;
+import java.util.stream.Collectors;
+
 import org.jboss.jandex.AnnotationInstance;
 import org.jboss.jandex.AnnotationTarget;
 import org.jboss.jandex.AnnotationTarget.Kind;
 import org.jboss.jandex.DotName;
+import org.jboss.jandex.MethodParameterInfo;
 
 /**
  * Applies {@link AnnotationsTransformer}s and caches the results of transformations.
@@ -37,6 +43,7 @@ public class AnnotationStore {
             this.transformersMap = new EnumMap<>(Kind.class);
             this.transformersMap.put(Kind.CLASS, initTransformers(Kind.CLASS, transformers));
             this.transformersMap.put(Kind.METHOD, initTransformers(Kind.METHOD, transformers));
+            this.transformersMap.put(Kind.METHOD_PARAMETER, initTransformers(Kind.METHOD_PARAMETER, transformers));
             this.transformersMap.put(Kind.FIELD, initTransformers(Kind.FIELD, transformers));
         }
         this.buildContext = buildContext;
@@ -106,8 +113,21 @@ public class AnnotationStore {
             case CLASS:
                 return target.asClass().classAnnotations();
             case METHOD:
-                // Note that the returning collection also contains method params annotations
-                return target.asMethod().annotations();
+                return target.asMethod()
+                    .annotations()
+                    .stream()
+                    .filter(annotation -> annotation.target().kind() == AnnotationTarget.Kind.METHOD)
+                    .collect(Collectors.toSet());
+            case METHOD_PARAMETER:
+                final MethodParameterInfo parameter = target.asMethodParameter();
+                return parameter.method()
+                    .annotations()
+                    .stream()
+                    // filter method-scope annotations to rule out these which are not related
+                    // to a target parameter
+                    .filter(annotation -> annotation.target().kind() == AnnotationTarget.Kind.METHOD_PARAMETER)
+                    .filter(annotation -> target.asMethodParameter().position() == parameter.position())
+                    .collect(Collectors.toSet());
             case FIELD:
                 return target.asField().annotations();
             default:
@@ -116,16 +136,16 @@ public class AnnotationStore {
     }
 
     private List<AnnotationsTransformer> initTransformers(Kind kind, Collection<AnnotationsTransformer> transformers) {
-        List<AnnotationsTransformer> found = new ArrayList<>();
-        for (AnnotationsTransformer transformer : transformers) {
-            if (transformer.appliesTo(kind)) {
-                found.add(transformer);
-            }
-        }
+
+        final List<AnnotationsTransformer> found = transformers.stream()
+            .filter(transformer -> transformer.appliesTo(kind))
+            .sorted(BuildExtension::compare)
+            .collect(Collectors.toList());
+
         if (found.isEmpty()) {
             return Collections.emptyList();
         }
-        found.sort(BuildExtension::compare);
+
         return found;
     }
 
@@ -141,7 +161,5 @@ public class AnnotationStore {
         public Transformation transform() {
             return new Transformation(new ArrayList<>(getAnnotations()), getTarget(), this::setAnnotations);
         }
-
     }
-
 }
